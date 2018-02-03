@@ -1,0 +1,5 @@
+add_subdirectory(classifiers)
+add_subdirectory(undistort)
+add_subdirectory(interpolate)
+add_subdirectory(train)
+add_subdirectory(classify)

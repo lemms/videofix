@@ -1,0 +1,6 @@
+message("Adding classifiers library")
+add_library(classifiers src/mlpclassifier.cpp)
+message("Including: ${Boost_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS}")
+include_directories(include ${Boost_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS})
+message("Linking: ${OpenCV_LIBRARIES} ${Boost_LIBRARIES}")
+target_link_libraries(classifiers ${OpenCV_LIBRARIES} ${Boost_LIBRARIES})

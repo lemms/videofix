@@ -1,0 +1,6 @@
+message("Added interpolate executable")
+add_executable(interpolate src/interpolate.cpp)
+message("Including: ${Boost_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS}")
+include_directories(${Boost_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS})
+message("Linking: ${OpenCV_LIBRARIES} ${Boost_LIBRARIES}")
+target_link_libraries(interpolate ${OpenCV_LIBRARIES} ${Boost_LIBRARIES})
