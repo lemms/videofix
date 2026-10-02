@@ -92,11 +92,21 @@ doesn't depend on video length.
    Runs longer than `max_gap`, and runs at the start or end of the clip, are
    reported but not repaired.
 3. **repair**: For each run, RIFE interpolates between the frames on either
-   side at t = (i-a)/(b-a). Small localised defects are blended through a
-   feathered mask, so untouched pixels keep their original values. The output
-   is encoded with NVENC (same codec family and bit depth, colour metadata
-   preserved), then audio, GoPro GPMF telemetry and container metadata are
-   copied with ffmpeg.
+   side at t = (i-a)/(b-a).
+   - Where those two frames agree (static background), the real frames are
+     cross-faded instead, with grain matched to the camera's measured noise,
+     and RIFE fills only the moving regions. This keeps sharpness and grain
+     constant, so long repairs don't visibly "pump".
+   - Small localised defects are blended through a feathered mask, so
+     untouched pixels keep their original values.
+   - Full-frame runs longer than `--max-gap` (e.g. corruption lasting until
+     the next keyframe) are still repaired, up to 3 s, if the scene is static:
+     the two reference frames must differ by less than 3 codes on average.
+     Otherwise they are marked `unrepaired:motion`.
+
+   The output is encoded with NVENC (same codec family, bit depth and colour
+   range as the source). Then audio, camera timecode, data tracks MP4 can
+   hold, and container metadata are copied with ffmpeg.
 
 ## Measured results
 
@@ -149,6 +159,11 @@ python tools/make_synthetic.py clean.mp4 bits.mp4 --truth truth_bits.csv --bitst
 
 Speed on an RTX 4060 Ti (8 GB), 1080p: analysis about 135 fps; the full
 `run` on 1,500 frames takes 35 s. CPU-only analysis runs at about 9 fps.
+
+Real footage (GoPro Hero4, 2.7K H.264, fixed camera): the recurring defect,
+where the lower part of the frame turns into colour streaks for 15 frames
+until the next keyframe, is detected and repaired. Untouched frames
+re-encode at 46–51 dB PSNR against the source.
 
 ## Tests
 
