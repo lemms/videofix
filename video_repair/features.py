@@ -1,4 +1,4 @@
-"""Self-supervised ViT features (DINOv3, falling back to DINOv2)."""
+"""Self-supervised ViT features (DINOv2 with registers by default)."""
 
 from __future__ import annotations
 
@@ -10,8 +10,9 @@ import torch.nn.functional as F
 log = logging.getLogger(__name__)
 
 BACKBONES = {
-    "dinov3": "facebook/dinov3-vits16-pretrain-lvd1689m",   # gated: accept the licence on HF, then `hf auth login`
-    "dinov2": "facebook/dinov2-small",
+    "dinov2reg": "facebook/dinov2-with-registers-small",    # Apache-2.0, ungated
+    "dinov2": "facebook/dinov2-small",                      # Apache-2.0, ungated
+    "dinov3": "facebook/dinov3-vits16-pretrain-lvd1689m",   # gated: needs an HF account + licence
 }
 GRID_W = 24          # patch columns; rows follow the aspect ratio
 
@@ -23,7 +24,7 @@ class Backbone:
     def __init__(self, name: str = "auto", device: torch.device | str = "cuda", frame_hw: tuple[int, int] = (1080, 1920)):
         from transformers import AutoModel
 
-        order = ["dinov3", "dinov2"] if name == "auto" else [name]
+        order = ["dinov2reg", "dinov2"] if name == "auto" else [name]
         last: Exception | None = None
         for key in order:
             repo = BACKBONES.get(key, key)
@@ -34,9 +35,7 @@ class Backbone:
                 break
             except Exception as e:
                 last = e
-                if key == "dinov3":
-                    log.warning("DINOv3 unavailable (%s). Using DINOv2. To enable DINOv3, accept the licence at "
-                                "https://huggingface.co/%s and run `hf auth login`.", type(e).__name__, repo)
+                log.warning("backbone %s unavailable (%s: %s)", key, type(e).__name__, str(e)[:200])
         else:
             raise RuntimeError(f"could not load a backbone: {last}")
         cfg = self.model.config

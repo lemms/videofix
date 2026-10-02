@@ -168,7 +168,8 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("-v", "--verbose", action="store_true")
 
     def det_opts(sp):
-        sp.add_argument("--backbone", default="auto", help="auto (DINOv3, else DINOv2) | dinov3 | dinov2")
+        sp.add_argument("--backbone", default="auto",
+                        help="auto (DINOv2 with registers, else DINOv2) | dinov2reg | dinov2 | dinov3 (gated)")
         sp.add_argument("--threshold", type=float, default=0.5, help="defect confidence threshold")
         sp.add_argument("--labels", type=Path, help="CSV frame_num,defective to calibrate the threshold")
         sp.add_argument("--extend-to-keyframe", action="store_true",

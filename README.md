@@ -20,9 +20,11 @@ FFmpeg/ffprobe must be on `PATH` for the final mux. Decoding and encoding
 use the FFmpeg bundled with PyAV (NVDEC/NVENC when an NVIDIA GPU is present).
 
 Models download on first use:
-- **DINOv3 ViT-S/16** (gated): accept the licence at
-  <https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m> and run
-  `hf auth login`. Without access it falls back to **DINOv2-small** (Apache-2.0).
+- **DINOv2-small with registers** (Apache-2.0, no account needed). Register
+  tokens remove the high-norm artifact patches of plain DINOv2, which matters
+  because detection compares patches individually. `--backbone dinov2` uses
+  plain DINOv2. `--backbone dinov3` uses DINOv3, which needs a Hugging Face
+  account with the licence accepted and `hf auth login`.
 - **RIFE 4.25** (Practical-RIFE, MIT licence): checksum-verified and loaded with
   `weights_only=True`, cached in `~/.cache/video_repair/`.
 
@@ -58,7 +60,7 @@ picks the confidence threshold that maximises F1 on your hand-labelled frames.
 Useful options: `--threshold` (default 0.5), `--max-gap` (longest run to
 interpolate, default 12), `--extend-to-keyframe` (see Limitations), `--quality` (NVENC CQ / x265 CRF, default 18),
 `--device cpu`, `--no-hwaccel` (software decoding, which also reports
-decoder errors), `--backbone dinov2`.
+decoder errors), `--backbone`.
 
 ## How it works
 
@@ -100,7 +102,7 @@ doesn't depend on video length.
 Test material: three Xiph 1080p50 sequences (crowd_run, park_joy,
 ducks_take_off) joined into a 1,500-frame 10-bit HEVC clip with a keyframe
 every 50 frames and two real scene cuts. Defects were injected with
-`tools/make_synthetic.py`. Runs were CPU-only, since the GPU was busy.
+`tools/make_synthetic.py`.
 
 | Test clip | Defects | Precision | Recall |
 |---|---|---|---|
@@ -144,6 +146,9 @@ python tools/evaluate.py truth.csv w/defective_frames.csv --clean clean.mp4 --br
 python tools/make_synthetic.py clean.mp4 bits.mp4 --truth truth_bits.csv --bitstream   # real decoder corruption
 ```
 
+Speed on an RTX 4060 Ti (8 GB), 1080p: analysis about 135 fps; the full
+`run` on 1,500 frames takes 35 s. CPU-only analysis runs at about 9 fps.
+
 ## Tests
 
 ```bash
@@ -165,5 +170,5 @@ python tools/make_synthetic.py clean.mp4 bits.mp4 --truth truth_bits.csv --bitst
   left in place and marked in the CSV.
 - The whole video is re-encoded once at high quality (about 50 dB PSNR
   against the source), so untouched frames are not bit-exact copies.
-- DINOv3 is gated on Hugging Face; without access the pipeline uses DINOv2.
-  All results above used DINOv2.
+- The detection results above are identical with DINOv2 and DINOv2 with
+  registers (registers separate novelty slightly better). DINOv3 is untested.

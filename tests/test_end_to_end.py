@@ -23,7 +23,7 @@ def test_black_frame_is_detected_and_repaired(clip, tmp_path):
     out = tmp_path / "fixed.mp4"
     work = tmp_path / "work"
     assert main(["run", str(broken), "-o", str(out), "--work", str(work), "--device", "cpu",
-                 "--no-hwaccel", "--backbone", "dinov2"]) == 0
+                 "--no-hwaccel", "--backbone", "dinov2reg"]) == 0
     rows = {int(r["frame_num"]): r for r in csv.DictReader(open(work / "defective_frames.csv"))}
     flagged = {i for i, r in rows.items() if int(r["defective"])}
     assert 30 in flagged
