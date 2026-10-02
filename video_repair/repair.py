@@ -30,7 +30,8 @@ FULL_FRAME_TYPES = {"freeze", "black", "flash", "noise", "lines", "tear"}
 
 @dataclass
 class RepairConfig:
-    max_gap: int = 12            # longest run that is interpolated
+    max_gap: int = 12            # longest run whose frames are replaced entirely
+    max_masked_gap: int = 120    # longest run that may be repaired by masked blending only
     blend_max_area: float = 0.4  # masks larger than this replace the whole frame
     feather: float = 0.6         # mask feathering, in patches
     interpolator: str = "rife"
@@ -54,10 +55,14 @@ def plan_repairs(det: Detection, cfg: RepairConfig) -> dict[int, Plan]:
     for rid, first, last in det.runs():
         a, b = first - 1, last + 1
         length = last - first + 1
+        areas = det.masks[first:last + 1].reshape(length, -1).mean(1)
+        full = any(det.defect_type[i] in FULL_FRAME_TYPES for i in range(first, last + 1)) \
+            or (areas == 0).any() or (areas > cfg.blend_max_area).any()
+        limit = cfg.max_gap if full else cfg.max_masked_gap
         if a < 0 or b >= n:
             status = "unrepaired:edge"
-        elif length > cfg.max_gap:
-            status = f"unrepaired:run>{cfg.max_gap}"
+        elif length > limit:
+            status = f"unrepaired:run>{limit}"
         elif not (det.present[a] and det.present[b]):
             status = "unrepaired:missing_reference"
         else:

@@ -49,7 +49,7 @@ def _detect(args):
     from .analyze import FeatureStore
     from .detect import DetectConfig, detect, save_masks, write_csv
     p = _paths(args)
-    cfg = DetectConfig(threshold=args.threshold)
+    cfg = DetectConfig(threshold=args.threshold, extend_to_keyframe=args.extend_to_keyframe)
     det = detect(FeatureStore(p["features"]), cfg)
     if args.labels:
         det = _calibrate(det, args.labels, cfg)
@@ -171,6 +171,8 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("--backbone", default="auto", help="auto (DINOv3, else DINOv2) | dinov3 | dinov2")
         sp.add_argument("--threshold", type=float, default=0.5, help="defect confidence threshold")
         sp.add_argument("--labels", type=Path, help="CSV frame_num,defective to calibrate the threshold")
+        sp.add_argument("--extend-to-keyframe", action="store_true",
+                        help="treat codec errors as persisting until the next keyframe (bitstream damage)")
         sp.add_argument("--no-review", action="store_true", help="skip the HTML review page")
 
     def rep_opts(sp):

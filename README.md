@@ -56,7 +56,7 @@ running it. Frames you add get a full-frame mask.
 picks the confidence threshold that maximises F1 on your hand-labelled frames.
 
 Useful options: `--threshold` (default 0.5), `--max-gap` (longest run to
-interpolate, default 12), `--quality` (NVENC CQ / x265 CRF, default 18),
+interpolate, default 12), `--extend-to-keyframe` (see Limitations), `--quality` (NVENC CQ / x265 CRF, default 18),
 `--device cpu`, `--no-hwaccel` (software decoding, which also reports
 decoder errors), `--backbone dinov2`.
 
@@ -97,16 +97,43 @@ doesn't depend on video length.
 
 ## Measured results
 
-On a 1080p50 10-bit HEVC test clip (three Xiph sequences joined, with two real
-scene cuts), with defects injected by `tools/make_synthetic.py`:
+Test material: three Xiph 1080p50 sequences (crowd_run, park_joy,
+ducks_take_off) joined into a 1,500-frame 10-bit HEVC clip with a keyframe
+every 50 frames and two real scene cuts. Defects were injected with
+`tools/make_synthetic.py`. Runs were CPU-only, since the GPU was busy.
 
-| Clip | Precision | Recall |
+| Test clip | Defects | Precision | Recall |
+|---|---|---|---|
+| Pixel defects, seed 1 (thresholds tuned here) | 40 frames, all 7 types | 1.000 | 0.950 |
+| Pixel defects, seed 7 (held out) | 82 frames | 1.000 | 0.963 |
+| Real bitstream damage (bytes flipped in 11 packets) | 53 frames | 1.000 | 0.189 |
+| ...same, with `--extend-to-keyframe` | | 0.981 | 0.981 |
+
+- Neither scene cut was ever flagged.
+- Misses: noise bursts that the encoder mostly smoothed away (about 1.5× the
+  normal coding error) and one tear.
+- Real bitstream damage is mostly *persistent*. A damaged reference frame
+  corrupts every frame until the next keyframe, often too faintly to see in
+  individual frames. By default only the onset is detected.
+  `--extend-to-keyframe` assumes propagation. It's right for that kind of
+  damage, but it over-flags footage with isolated glitches: precision on seed
+  1 fell to 0.28 with it on. Check the review page before using it.
+
+Repair quality on the seed-1 clip: PSNR of defective frames against the clean
+source, before → after.
+
+| Type | Before | After |
 |---|---|---|
-| seed 1 (tuning set, 40 defective frames) | see `tools/evaluate.py` | |
-| seed 7 (held out, 82 defective frames) | | |
+| black | 8.3 dB | 27.9 dB |
+| flash | 6.5 dB | 29.1 dB |
+| tear | 18.2 dB | 27.9 dB |
+| blocks | 18.8 dB | 23.2 dB |
+| freeze | 26.9 dB | 30.3 dB |
+| lines | 27.0 dB | 31.2 dB |
+| all | 18.7 dB | 26.5 dB |
 
-Repair (seed 1): defective frames improve from 18.7 dB to 26.5 dB mean PSNR
-against the clean source.
+RIFE against linear blending, predicting a dropped frame: 29.0 vs 23.9 dB and
+27.5 vs 18.7 dB on normal motion; about equal on chaotic splashing water.
 
 Reproduce:
 
@@ -126,8 +153,17 @@ python tools/make_synthetic.py clean.mp4 bits.mp4 --truth truth_bits.csv --bitst
 
 ## Limitations
 
+- **Persistent bitstream damage** (see above) is detected only at its onset
+  unless you pass `--extend-to-keyframe`. Even then, its masks usually cover
+  most of the frame, so runs longer than `--max-gap` are flagged
+  `unrepaired:run>12` rather than interpolated across a second or more.
+  Damaged clips decode differently with NVDEC and with FFmpeg's software
+  decoder (NVDEC hides more), so pick one decoder and use it for every pass.
 - Noise bursts that the camera's encoder mostly smoothed away can be missed.
-- Long runs (longer than `--max-gap`) and large, chaotic motion (splashing
-  water) interpolate poorly. These are left in place and marked in the CSV.
+- Long runs and chaotic motion (splashing water) interpolate poorly. Runs
+  longer than `--max-gap` (full-frame) or `--max-masked-gap` (mask-only) are
+  left in place and marked in the CSV.
 - The whole video is re-encoded once at high quality (about 50 dB PSNR
-  against the source); untouched frames are not copied bit-exactly.
+  against the source), so untouched frames are not bit-exact copies.
+- DINOv3 is gated on Hugging Face; without access the pipeline uses DINOv2.
+  All results above used DINOv2.

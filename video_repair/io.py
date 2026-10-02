@@ -107,6 +107,15 @@ def probe(path: str | Path) -> VideoInfo:
         )
 
 
+_PICT = {1: "I", 2: "P", 3: "B", 4: "S", 5: "SI", 6: "SP", 7: "BI"}
+
+
+def _pict_type(pt) -> str:
+    """AVPictureType (int or enum, depending on the PyAV version) -> 'I'/'P'/'B'/..."""
+    name = getattr(pt, "name", None)
+    return name if isinstance(name, str) else _PICT.get(int(pt), "?")
+
+
 def _plane(p: av.video.plane.VideoPlane, dtype: np.dtype, width: int) -> np.ndarray:
     """Copy one plane out of a frame, dropping line padding."""
     itemsize = np.dtype(dtype).itemsize
@@ -196,7 +205,7 @@ def iter_frames(
                         pts=pts,
                         time=float(f.time) if f.time is not None else idx / float(info.fps),
                         key=bool(f.key_frame),
-                        pict_type=f.pict_type.name if hasattr(f.pict_type, "name") else str(f.pict_type),
+                        pict_type=_pict_type(f.pict_type),
                         corrupt=bool(getattr(f, "is_corrupt", False)),
                         decode_errors=errors.pop(pts, 0) if pts is not None else 0,
                         packet_size=sizes.pop(pts, 0) if pts is not None else 0,

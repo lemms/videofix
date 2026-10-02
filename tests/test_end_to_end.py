@@ -46,3 +46,17 @@ def test_blockwise_detection_matches_whole(clip, tmp_path, monkeypatch):
     parts = D.detect(store, cfg)
     assert np.array_equal(whole.defective, parts.defective)
     assert np.allclose(whole.confidence, parts.confidence)
+
+
+def test_analyze_resumes_after_interruption(clip, tmp_path, monkeypatch):
+    from video_repair import analyze as A
+
+    monkeypatch.setattr(A, "CHUNK", 16)            # 60 frames -> 4 chunks
+    full = A.analyze(clip, tmp_path / "a", backbone_name="dinov2", hwaccel=False, device="cpu").load()
+    store = A.analyze(clip, tmp_path / "b", backbone_name="dinov2", hwaccel=False, device="cpu")
+    for c in (2, 3):                               # simulate a crash after chunk 1
+        store.chunk_path(c).unlink()
+    resumed = A.analyze(clip, tmp_path / "b", backbone_name="dinov2", hwaccel=False, device="cpu").load()
+    assert np.array_equal(full["index"], resumed["index"])
+    for k in ("pd1", "fd1", "fd3", "block", "still"):
+        assert np.allclose(full[k].astype(np.float32), resumed[k].astype(np.float32), atol=2e-3, equal_nan=True), k

@@ -70,3 +70,21 @@ def test_plan_repairs_brackets_and_limits():
     assert plans[0].status == "unrepaired:edge"
     assert (plans[5].a, plans[5].b, plans[5].status) == (4, 7, "interpolate")
     assert plans[12].status.startswith("unrepaired:run")
+
+
+def test_long_masked_run_is_repairable_but_full_frame_is_not():
+    flags = [0] * 60
+    for i in range(10, 40):
+        flags[i] = 1                # 30 frames, longer than max_gap
+    det = _det(flags)
+    det.masks[10:40, 0, 0] = True   # small mask (1 of 4 cells) -> masked blending
+    plans = plan_repairs(det, RepairConfig(max_gap=12, max_masked_gap=120))
+    assert plans[20].status == "interpolate"
+    det.masks[10:40] = True         # full-frame masks -> limited by max_gap
+    plans = plan_repairs(det, RepairConfig(max_gap=12, max_masked_gap=120))
+    assert plans[20].status.startswith("unrepaired:run")
+
+
+def test_pict_type_mapping():
+    from video_repair.io import _pict_type
+    assert [_pict_type(i) for i in (1, 2, 3)] == ["I", "P", "B"]

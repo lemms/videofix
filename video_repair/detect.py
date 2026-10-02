@@ -52,6 +52,7 @@ class DetectConfig:
     freeze_rel: float = 0.12          # still < freeze_rel * local median change
     freeze_abs: float = 1.5           # ... and below this many 10-bit codes
     max_smear: int = 120              # longest run attributed to keyframe smear
+    extend_to_keyframe: bool = False  # assume codec errors propagate to the next keyframe
     dilate: int = 1                   # mask dilation in patches
 
 
@@ -160,7 +161,7 @@ class Detection:
         return out
 
 
-BLOCK = 4096          # frames scored at once; bounds memory for long videos
+BLOCK = 2048          # frames scored at once; bounds memory for long videos
 
 
 def detect(store: FeatureStore, cfg: DetectConfig | None = None) -> Detection:
@@ -279,6 +280,22 @@ def _score_block(f: dict[str, np.ndarray], present: np.ndarray, cfg: DetectConfi
             if onset > 0.05 and release > 0.05 and release > 2 * between and release > 2 * max(outside, 0) + 0.05:
                 smear[o:nk] = True
                 masks[o:nk] |= m
+    if cfg.extend_to_keyframe and len(keys):
+        # bitstream damage in a reference frame persists, often too faintly to
+        # see frame by frame, until the decoder resets at the next keyframe
+        z = {k: np.nan_to_num(chans[k]) for k in ("mean_y", "row", "col", "hf")}
+        codec_like = (defective & ~frozen & (np.abs(z["mean_y"]) < 6)
+                      & (np.maximum(z["row"], z["col"]) < cfg.ramps["row"][0]) & (z["hf"] < cfg.ramps["hf"][0]))
+        for o in np.flatnonzero(codec_like & ~key & ~smear):
+            nxt = keys[keys > o]
+            if not len(nxt) or nxt[0] - o > cfg.max_smear:
+                continue
+            nk = nxt[0]
+            m = masks[o] if masks[o].any() else np.ones_like(masks[o])
+            for t in range(o, nk):
+                grow = (t - o) // 8                       # errors drift with motion
+                masks[t] |= _dilate(m[None], grow)[0] if grow else m
+            smear[o:nk] = True
     defective |= smear
     conf = np.where(smear, np.maximum(conf, 0.75), conf)
 
