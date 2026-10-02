@@ -41,7 +41,8 @@ video-repair detect  GX010042.MP4          # writes CSV, masks and a review page
 video-repair repair  GX010042.MP4 -o GX010042_fixed.mp4
 ```
 
-The work directory (`<input>_vrwork/` by default, or `--work`) contains:
+The work directory (`./<input stem>_vrwork/` in the current directory by
+default, or `--work`; nothing is ever written next to the input) contains:
 
 | File | Contents |
 |---|---|

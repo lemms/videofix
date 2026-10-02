@@ -32,6 +32,8 @@ FULL_FRAME_TYPES = {"freeze", "black", "flash", "noise", "lines", "tear"}
 class RepairConfig:
     max_gap: int = 12            # longest run whose frames are replaced entirely
     max_masked_gap: int = 120    # longest run that may be repaired by masked blending only
+    max_static_seconds: float = 3.0  # longer full-frame runs are interpolated if the scene is static
+    static_motion: float = 3.0   # mean |luma(a) - luma(b)| in 8-bit codes below which a scene is static
     blend_max_area: float = 0.4  # masks larger than this replace the whole frame
     feather: float = 0.6         # mask feathering, in patches
     interpolator: str = "rife"
@@ -45,12 +47,18 @@ class Plan:
     last: int
     a: int
     b: int
-    status: str                  # "interpolate" or "unrepaired:<reason>"
+    status: str                  # "interpolate", "interpolate_if_static" or "unrepaired:<reason>"
 
 
-def plan_repairs(det: Detection, cfg: RepairConfig) -> dict[int, Plan]:
-    """Map every defective frame to the run plan that covers it."""
+def plan_repairs(det: Detection, cfg: RepairConfig, fps: float = 30.0) -> dict[int, Plan]:
+    """Map every defective frame to the run plan that covers it.
+
+    Full-frame runs longer than ``max_gap`` (e.g. corruption that lasts until
+    the next keyframe) are still repaired if the camera and scene are nearly
+    static; that is checked against the reference frames during repair.
+    """
     n = len(det.index)
+    max_static = max(cfg.max_gap, int(round(cfg.max_static_seconds * fps)))
     plans: dict[int, Plan] = {}
     for rid, first, last in det.runs():
         a, b = first - 1, last + 1
@@ -61,12 +69,14 @@ def plan_repairs(det: Detection, cfg: RepairConfig) -> dict[int, Plan]:
         limit = cfg.max_gap if full else cfg.max_masked_gap
         if a < 0 or b >= n:
             status = "unrepaired:edge"
-        elif length > limit:
-            status = f"unrepaired:run>{limit}"
         elif not (det.present[a] and det.present[b]):
             status = "unrepaired:missing_reference"
-        else:
+        elif length <= limit:
             status = "interpolate"
+        elif full and length <= max_static:
+            status = "interpolate_if_static"
+        else:
+            status = f"unrepaired:run>{limit}"
         p = Plan(rid, first, last, a, b, status)
         for i in range(first, last + 1):
             plans[i] = p
@@ -94,34 +104,56 @@ class Repairer:
 
         self.info, self.det, self.cfg, self.device = info, det, cfg, device
         self.model = interp.load(cfg.interpolator, device)
+        self.batch = cfg.batch if info.width * info.height <= 2_100_000 else 1
+
+    def motion(self, a: io.Frame, b: io.Frame) -> float:
+        """Mean absolute luma difference of two frames at 1/8 scale, in 8-bit codes."""
+        y, _ = color.upload([a, b], self.info, self.device)
+        y = F.interpolate(y, scale_factor=1 / 8, mode="area")
+        return float((y[0] - y[1]).abs().mean()) * 255
 
     def run_frames(self, frames: list[io.Frame], a: io.Frame, b: io.Frame, plan: Plan) -> list[io.Frame]:
+        """Interpolate a run, halving the batch on CUDA OOM (the GPU may be shared)."""
+        rgb_a = color.frames_to_rgb([a], self.info, self.device)
+        rgb_b = color.frames_to_rgb([b], self.info, self.device)
+        out: list[io.Frame] = []
+        i = 0
+        while i < len(frames):
+            chunk = frames[i:i + self.batch]
+            try:
+                out += self._chunk(chunk, rgb_a, rgb_b, plan)
+                i += len(chunk)
+            except torch.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                if self.batch == 1:
+                    raise
+                self.batch = max(1, self.batch // 2)
+                log.warning("CUDA out of memory; interpolation batch -> %d", self.batch)
+        return out
+
+    def _chunk(self, chunk: list[io.Frame], rgb_a: torch.Tensor, rgb_b: torch.Tensor, plan: Plan) -> list[io.Frame]:
         info, det, cfg = self.info, self.det, self.cfg
         out: list[io.Frame] = []
-        rgb_a = color.frames_to_rgb([a], info, self.device)
-        rgb_b = color.frames_to_rgb([b], info, self.device)
-        for s in range(0, len(frames), cfg.batch):
-            chunk = frames[s:s + cfg.batch]
-            ts = torch.tensor([(f.index - plan.a) / (plan.b - plan.a) for f in chunk])
-            k = len(chunk)
-            mid = self.model.interpolate(rgb_a.expand(k, -1, -1, -1), rgb_b.expand(k, -1, -1, -1), ts)
-            y_new, uv_new = color.rgb_to_yuv(mid, info)
-            y_old, uv_old = color.upload(chunk, info, self.device)
-            for j, f in enumerate(chunk):
-                mask = det.masks[f.index]
-                area = float(mask.mean())
-                full = det.defect_type[f.index] in FULL_FRAME_TYPES or area == 0 or area > cfg.blend_max_area
-                if full:
-                    y, uv = y_new[j:j + 1], uv_new[j:j + 1]
-                    f.meta["repair"] = "interpolated"
-                else:
-                    al = _alpha(mask, y_old.shape[-2:], cfg.feather, self.device)
-                    al_c = F.interpolate(al, size=uv_old.shape[-2:], mode="area")
-                    y = al * y_new[j:j + 1] + (1 - al) * y_old[j:j + 1]
-                    uv = al_c * uv_new[j:j + 1] + (1 - al_c) * uv_old[j:j + 1]
-                    f.meta["repair"] = "blended"
-                (f.y, f.uv), = color.download(y, uv, info)
-                out.append(f)
+        ts = torch.tensor([(f.index - plan.a) / (plan.b - plan.a) for f in chunk])
+        k = len(chunk)
+        mid = self.model.interpolate(rgb_a.expand(k, -1, -1, -1), rgb_b.expand(k, -1, -1, -1), ts)
+        y_new, uv_new = color.rgb_to_yuv(mid, info)
+        y_old, uv_old = color.upload(chunk, info, self.device)
+        for j, f in enumerate(chunk):
+            mask = det.masks[f.index]
+            area = float(mask.mean())
+            full = det.defect_type[f.index] in FULL_FRAME_TYPES or area == 0 or area > cfg.blend_max_area
+            if full:
+                y, uv = y_new[j:j + 1], uv_new[j:j + 1]
+                f.meta["repair"] = "interpolated"
+            else:
+                al = _alpha(mask, y_old.shape[-2:], cfg.feather, self.device)
+                al_c = F.interpolate(al, size=uv_old.shape[-2:], mode="area")
+                y = al * y_new[j:j + 1] + (1 - al) * y_old[j:j + 1]
+                uv = al_c * uv_new[j:j + 1] + (1 - al_c) * uv_old[j:j + 1]
+                f.meta["repair"] = "blended"
+            (f.y, f.uv), = color.download(y, uv, info)
+            out.append(f)
         return out
 
 
@@ -131,15 +163,15 @@ def repair(path: Path, det: Detection, output: Path, cfg: RepairConfig | None = 
     cfg = cfg or RepairConfig()
     info = io.probe(path)
     dev = torch.device(device if torch.cuda.is_available() or device == "cpu" else "cpu")
-    plans = plan_repairs(det, cfg)
-    todo = {i: p for i, p in plans.items() if p.status == "interpolate"}
+    plans = plan_repairs(det, cfg, float(info.fps))
+    todo = {i: p for i, p in plans.items() if p.status.startswith("interpolate")}
     status = {i: p.status for i, p in plans.items()}
     refs_needed: dict[int, int] = {}
     for p in {id(p): p for p in todo.values()}.values():
         refs_needed[p.a] = refs_needed.get(p.a, 0) + 1
         refs_needed[p.b] = refs_needed.get(p.b, 0) + 1
     repairer = Repairer(info, det, cfg, dev) if todo else None
-    log.info("repair: %d runs to interpolate (%d frames), %d frames left unrepaired",
+    log.info("repair: %d runs to interpolate (%d frames, static-scene check pending for some), %d frames left unrepaired",
              len({p.run_id for p in todo.values()}), len(todo), len(plans) - len(todo))
 
     tmp = output.with_name(output.stem + ".video.tmp.mp4")
@@ -182,6 +214,16 @@ def repair(path: Path, det: Detection, output: Path, cfg: RepairConfig | None = 
                 run = []
                 while pending and pending[0].index <= p.last:
                     run.append(pending.popleft())
+                if p.status == "interpolate_if_static":
+                    m = repairer.motion(refs[p.a], refs[p.b])
+                    if m > cfg.static_motion:
+                        log.info("run %d-%d: scene moves (%.1f codes), left unrepaired", p.first, p.last, m)
+                        for f in run:
+                            status[f.index] = "unrepaired:motion"
+                            emit(f, None)
+                        release(p.a)
+                        release(p.b)
+                        continue
                 before = [io.Frame(**{**f.__dict__, "meta": dict(f.meta)}) for f in run] if on_frame else [None] * len(run)
                 fixed = repairer.run_frames(run, refs[p.a], refs[p.b], p)
                 for f, bf in zip(fixed, before):

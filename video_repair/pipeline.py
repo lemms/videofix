@@ -20,7 +20,9 @@ log = logging.getLogger("video_repair")
 
 
 def _work_dir(args) -> Path:
-    return Path(args.work) if args.work else args.input.with_name(args.input.stem + "_vrwork")
+    # default to the current directory, never next to the input: originals
+    # often live on archive drives that should stay untouched
+    return Path(args.work) if args.work else Path.cwd() / (args.input.stem + "_vrwork")
 
 
 def _paths(args) -> dict[str, Path]:
@@ -161,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("input", type=Path)
         if output:
             sp.add_argument("-o", "--output", type=Path, required=True)
-        sp.add_argument("--work", help="work directory (default: <input>_vrwork next to the input)")
+        sp.add_argument("--work", help="work directory (default: ./<input stem>_vrwork)")
         sp.add_argument("--csv", help="detection CSV path (default: <work>/defective_frames.csv)")
         sp.add_argument("--device", default="auto", help="auto | cuda | cpu")
         sp.add_argument("--no-hwaccel", action="store_true", help="software decoding (slower, more decoder error reports)")

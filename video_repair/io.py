@@ -88,6 +88,16 @@ def probe(path: str | Path) -> VideoInfo:
         else:
             duration = 0.0
         n = s.frames or round(duration * fps)
+        # container headers can disagree with the bitstream (GoPro yuvj420p files
+        # say "limited" but are full range); trust the first decoded frame
+        color_range = int(cc.color_range or 0)
+        try:
+            first = next(c.decode(s))
+            color_range = int(first.color_range or color_range)
+        except (StopIteration, av.error.FFmpegError):
+            pass
+        if fmt is not None and fmt.name.startswith("yuvj"):
+            color_range = 2
         return VideoInfo(
             path=path,
             width=cc.width,
@@ -100,7 +110,7 @@ def probe(path: str | Path) -> VideoInfo:
             bit_depth=depth,
             n_frames=int(n),
             duration=duration,
-            color_range=int(cc.color_range or 0),
+            color_range=color_range,
             colorspace=int(cc.colorspace or 0),
             color_primaries=int(cc.color_primaries or 0),
             color_trc=int(cc.color_trc or 0),
@@ -390,9 +400,11 @@ def _ffprobe_streams(path: Path) -> list[dict]:
 def mux(video_only: Path, source: Path, output: Path) -> list[str]:
     """Combine the re-encoded video with every other stream of *source*.
 
-    Audio, GoPro telemetry (``gpmd``) and other data streams are stream-copied
-    together with container metadata.  If the muxer rejects a data stream the
-    mux is retried with video + audio only.  Returns warnings.
+    Audio and data streams (GoPro ``gpmd`` telemetry etc.) are stream-copied
+    with container metadata; the camera timecode is carried over as video
+    metadata so the muxer writes a fresh ``tmcd`` track.  Data streams the MP4
+    muxer cannot store (e.g. GoPro's ``fdsc``) are dropped one by one with a
+    warning.  Returns warnings.
     """
     if shutil.which("ffmpeg") is None:
         raise RuntimeError("ffmpeg not found on PATH (needed for the final mux)")
@@ -400,32 +412,38 @@ def mux(video_only: Path, source: Path, output: Path) -> list[str]:
     audio = [s for s in streams if s.get("codec_type") == "audio"]
     data = [s for s in streams if s.get("codec_type") in ("data", "subtitle")
             and s.get("codec_tag_string") != "tmcd"]
+    timecode = next((s.get("tags", {}).get("timecode") for s in streams
+                     if s.get("tags", {}).get("timecode")), None)
+    is_hevc = _ffprobe_streams(video_only)[0].get("codec_name") == "hevc"
 
-    def run(include_data: bool) -> subprocess.CompletedProcess:
+    def run(keep: list[dict]) -> subprocess.CompletedProcess:
         cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-               "-i", str(video_only), "-i", str(source),
-               "-map", "0:v:0"]
-        for s in audio:
-            cmd += ["-map", f"1:{s['index']}"]
-        if include_data:
-            for s in data:
-                cmd += ["-map", f"1:{s['index']}"]
+               "-i", str(video_only), "-i", str(source), "-map", "0:v:0"]
+        for st in audio + keep:
+            cmd += ["-map", f"1:{st['index']}"]
         cmd += ["-c", "copy", "-map_metadata", "1", "-map_chapters", "1"]
-        if include_data and data:
+        if keep:
             cmd += ["-copy_unknown"]
-            for out_i, s in enumerate(data, start=1 + len(audio)):
-                tag = s.get("codec_tag_string")
+            for out_i, st in enumerate(keep, start=1 + len(audio)):
+                tag = st.get("codec_tag_string")
                 if tag and not tag.startswith("["):
                     cmd += [f"-tag:{out_i}", tag]
-        cmd += ["-tag:v", "hvc1"] if _ffprobe_streams(video_only)[0].get("codec_name") == "hevc" else []
+        if timecode:
+            cmd += ["-metadata:s:v:0", f"timecode={timecode}"]
+        if is_hevc:
+            cmd += ["-tag:v", "hvc1"]
         cmd += ["-movflags", "+faststart", str(output)]
         return subprocess.run(cmd, capture_output=True, text=True)
 
     warnings: list[str] = []
-    proc = run(include_data=bool(data))
-    if proc.returncode != 0 and data:
-        warnings.append(f"could not copy data streams ({proc.stderr.strip()[-300:]}); kept audio only")
-        proc = run(include_data=False)
+    keep = list(data)
+    proc = run(keep)
+    if proc.returncode != 0 and keep:
+        # find the data streams the muxer accepts, one at a time
+        keep = [st for st in data if run([st]).returncode == 0]
+        dropped = [st.get("codec_tag_string", str(st["index"])) for st in data if st not in keep]
+        warnings.append(f"MP4 cannot store data stream(s) {', '.join(dropped)}; dropped")
+        proc = run(keep)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg mux failed: {proc.stderr}")
     return warnings

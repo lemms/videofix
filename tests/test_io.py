@@ -73,3 +73,9 @@ def test_color_roundtrip_luma_exact(clip):
     rgb = color.yuv_to_rgb(y, uv, info)
     (y2, uv2), = color.download(*color.rgb_to_yuv(rgb, info), info)
     assert np.abs(y2.astype(int) - f.y.astype(int)).max() <= 1
+
+
+def test_probe_reads_full_range_from_bitstream(tmp_path):
+    from tests.conftest import make_clip
+    clip = make_clip(tmp_path / "full.mp4", n=5, pix_fmt="yuvj420p")
+    assert io.probe(clip).color_range == 2

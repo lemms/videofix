@@ -66,7 +66,7 @@ def test_plan_repairs_brackets_and_limits():
         flags[i] = 1                # 2-frame run
     for i in range(10, 25):
         flags[i] = 1                # 15 frames > max_gap
-    plans = plan_repairs(_det(flags), RepairConfig(max_gap=12))
+    plans = plan_repairs(_det(flags), RepairConfig(max_gap=12, max_static_seconds=0))
     assert plans[0].status == "unrepaired:edge"
     assert (plans[5].a, plans[5].b, plans[5].status) == (4, 7, "interpolate")
     assert plans[12].status.startswith("unrepaired:run")
@@ -80,11 +80,23 @@ def test_long_masked_run_is_repairable_but_full_frame_is_not():
     det.masks[10:40, 0, 0] = True   # small mask (1 of 4 cells) -> masked blending
     plans = plan_repairs(det, RepairConfig(max_gap=12, max_masked_gap=120))
     assert plans[20].status == "interpolate"
-    det.masks[10:40] = True         # full-frame masks -> limited by max_gap
-    plans = plan_repairs(det, RepairConfig(max_gap=12, max_masked_gap=120))
+    det.masks[10:40] = True         # full-frame masks -> limited by max_gap (static rule off)
+    plans = plan_repairs(det, RepairConfig(max_gap=12, max_masked_gap=120, max_static_seconds=0))
     assert plans[20].status.startswith("unrepaired:run")
 
 
 def test_pict_type_mapping():
     from video_repair.io import _pict_type
     assert [_pict_type(i) for i in (1, 2, 3)] == ["I", "P", "B"]
+
+
+def test_long_full_frame_run_waits_for_static_check():
+    flags = [0] * 60
+    for i in range(10, 25):
+        flags[i] = 1                # 15 frames, full-frame
+    det = _det(flags)
+    det.masks[10:25] = True
+    plans = plan_repairs(det, RepairConfig(max_gap=12, max_static_seconds=1.0), fps=30.0)
+    assert plans[12].status == "interpolate_if_static"
+    plans = plan_repairs(det, RepairConfig(max_gap=12, max_static_seconds=0.3), fps=30.0)
+    assert plans[12].status.startswith("unrepaired:run")
