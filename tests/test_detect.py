@@ -100,3 +100,17 @@ def test_long_full_frame_run_waits_for_static_check():
     assert plans[12].status == "interpolate_if_static"
     plans = plan_repairs(det, RepairConfig(max_gap=12, max_static_seconds=0.3), fps=30.0)
     assert plans[12].status.startswith("unrepaired:run")
+
+
+def test_keep_static_crossfades_and_restores_grain():
+    import torch
+    from video_repair.repair import Repairer
+    torch.manual_seed(0)
+    a = torch.full((1, 3, 64, 64), 0.5) + 0.01 * torch.randn(1, 3, 64, 64)
+    b = torch.full((1, 3, 64, 64), 0.5) + 0.01 * torch.randn(1, 3, 64, 64)
+    mid = torch.zeros(2, 3, 64, 64)                        # interpolator output, must be ignored
+    wgt = torch.zeros(1, 1, 64, 64)                        # everything static
+    out = Repairer._keep_static(mid, a, b, torch.tensor([0.25, 0.5]), wgt, sigma=0.01)
+    assert abs(float(out.mean()) - 0.5) < 2e-3            # cross-fade of a and b, not the interpolator
+    noise = (out[1] - 0.5).std()                          # t=0.5: grain restores ~sigma
+    assert 0.007 < float(noise) < 0.013

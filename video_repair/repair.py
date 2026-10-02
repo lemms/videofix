@@ -36,6 +36,8 @@ class RepairConfig:
     static_motion: float = 3.0   # mean |luma(a) - luma(b)| in 8-bit codes below which a scene is static
     blend_max_area: float = 0.4  # masks larger than this replace the whole frame
     feather: float = 0.6         # mask feathering, in patches
+    static_lo: float = 4.0       # |a - b| (8-bit codes, smoothed) below which a pixel counts as static
+    static_hi: float = 12.0      # ... and above which it is fully synthesised by the interpolator
     interpolator: str = "rife"
     batch: int = 4
 
@@ -116,12 +118,13 @@ class Repairer:
         """Interpolate a run, halving the batch on CUDA OOM (the GPU may be shared)."""
         rgb_a = color.frames_to_rgb([a], self.info, self.device)
         rgb_b = color.frames_to_rgb([b], self.info, self.device)
+        wgt, sigma = self._static_weight(rgb_a, rgb_b)
         out: list[io.Frame] = []
         i = 0
         while i < len(frames):
             chunk = frames[i:i + self.batch]
             try:
-                out += self._chunk(chunk, rgb_a, rgb_b, plan)
+                out += self._chunk(chunk, rgb_a, rgb_b, wgt, sigma, plan)
                 i += len(chunk)
             except torch.OutOfMemoryError:
                 torch.cuda.empty_cache()
@@ -131,12 +134,54 @@ class Repairer:
                 log.warning("CUDA out of memory; interpolation batch -> %d", self.batch)
         return out
 
-    def _chunk(self, chunk: list[io.Frame], rgb_a: torch.Tensor, rgb_b: torch.Tensor, plan: Plan) -> list[io.Frame]:
+    def _static_weight(self, rgb_a: torch.Tensor, rgb_b: torch.Tensor) -> tuple[torch.Tensor, float]:
+        """Per-pixel interpolator weight (0 where a and b agree, 1 where they differ)
+        and the camera's temporal noise level (std, [0,1] units) in the static area."""
+        h, w = rgb_a.shape[-2:]
+        d = (rgb_a - rgb_b).abs().mean(1, keepdim=True)
+        d = F.avg_pool2d(F.interpolate(d, scale_factor=0.25, mode="area"), 5, 1, 2)
+        d = F.max_pool2d(d, 5, 1, 2)                            # grow moving regions a little
+        lo, hi = self.cfg.static_lo / 255, self.cfg.static_hi / 255
+        wgt = ((d - lo) / (hi - lo)).clamp(0, 1)
+        wgt = F.interpolate(wgt, size=(h, w), mode="bilinear", align_corners=False)
+        # a and b carry independent noise, so std(a - b) = sqrt(2) * sigma in static areas
+        diff = (rgb_a - rgb_b).mean(1, keepdim=True)[wgt < 0.01]
+        sigma = float(1.4826 * diff.abs().median() / 2 ** 0.5) if diff.numel() > 1000 else 0.0
+        return wgt, sigma
+
+    @staticmethod
+    def _keep_static(mid: torch.Tensor, rgb_a: torch.Tensor, rgb_b: torch.Tensor,
+                     ts: torch.Tensor, wgt: torch.Tensor, sigma: float) -> torch.Tensor:
+        """Use the real nearest reference frame where nothing moves.
+
+        Interpolated frames are softer and less noisy than camera frames; over a
+        long gap that reads as a texture 'pump' in static areas.  There we
+        cross-fade the two real frames instead (sharp, no jump) and add grain
+        matched to the camera noise, and the interpolator only fills the regions
+        that actually move.
+        """
+        t = ts.to(mid.device, mid.dtype).view(-1, 1, 1, 1)
+        static = (1 - t) * rgb_a + t * rgb_b
+        # cross-fading two noisy frames lowers their noise; add fresh grain so the
+        # static background keeps the camera's frame-to-frame noise level
+        keep = (1 - t) ** 2 + t ** 2
+        g_sigma = sigma * torch.sqrt((1 - keep).clamp_min(0))
+        if sigma > 0:
+            g = torch.randn(mid.shape[0], 1, *mid.shape[-2:], device=mid.device, dtype=mid.dtype)
+            k = torch.tensor([0.25, 0.5, 0.25], device=mid.device, dtype=mid.dtype)
+            g = F.conv2d(F.pad(g, (1, 1, 1, 1), mode="reflect"), (k[:, None] * k[None, :])[None, None])
+            g = g / g.flatten(1).std(1).view(-1, 1, 1, 1)       # unit std after the slight blur
+            static = static + g * g_sigma
+        return wgt * mid + (1 - wgt) * static
+
+    def _chunk(self, chunk: list[io.Frame], rgb_a: torch.Tensor, rgb_b: torch.Tensor,
+               wgt: torch.Tensor, sigma: float, plan: Plan) -> list[io.Frame]:
         info, det, cfg = self.info, self.det, self.cfg
         out: list[io.Frame] = []
         ts = torch.tensor([(f.index - plan.a) / (plan.b - plan.a) for f in chunk])
         k = len(chunk)
         mid = self.model.interpolate(rgb_a.expand(k, -1, -1, -1), rgb_b.expand(k, -1, -1, -1), ts)
+        mid = self._keep_static(mid, rgb_a, rgb_b, ts, wgt, sigma)
         y_new, uv_new = color.rgb_to_yuv(mid, info)
         y_old, uv_old = color.upload(chunk, info, self.device)
         for j, f in enumerate(chunk):
