@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-repair"
+version = "0.2.0"
+description = "Detect and repair defective frames in large videos (GoPro) with streaming decode, DINO features and RIFE interpolation."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.4",          # install the CUDA build: --index-url https://download.pytorch.org/whl/cu128
+    "av>=14",              # PyAV, bundles FFmpeg with NVDEC/NVENC
+    "transformers>=4.56",  # DINOv3 / DINOv2 backbones
+    "huggingface_hub",
+    "numpy>=1.26",
+    "opencv-python-headless>=4.8",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+video-repair = "video_repair.pipeline:main"
+
+[tool.setuptools.packages.find]
+include = ["video_repair*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: end-to-end tests that load models"]
