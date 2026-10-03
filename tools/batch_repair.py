@@ -80,11 +80,32 @@ class Status:
             tmp.replace(self.path)
 
 
+CHILDREN: set[subprocess.Popen] = set()
+
+
+def _stop(signum, frame):
+    """On SIGTERM/SIGINT stop the running analyse/repair jobs too, then exit."""
+    for c in list(CHILDREN):
+        c.terminate()
+    for c in list(CHILDREN):
+        try:
+            c.wait(10)
+        except subprocess.TimeoutExpired:
+            c.kill()
+    os._exit(130)
+
+
 def run(cmd: list[str], log: Path) -> None:
     with open(log, "a") as fh:
         fh.write(f"\n$ {' '.join(cmd)}\n")
         fh.flush()
-        r = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT)
+        CHILDREN.add(proc)
+        try:
+            proc.wait()
+        finally:
+            CHILDREN.discard(proc)
+    r = proc
     if r.returncode != 0:
         raise RuntimeError(f"{cmd[3]} failed (exit {r.returncode}); see {log}")
 
@@ -144,6 +165,9 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--margin-gb", type=float, default=20.0, help="keep this much free on the output disk")
     a = ap.parse_args()
+    import signal
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
 
     sources = []
     for s in a.source:
