@@ -25,7 +25,7 @@ from .detect import Detection
 
 log = logging.getLogger(__name__)
 
-FULL_FRAME_TYPES = {"freeze", "black", "flash", "noise", "lines", "tear"}
+FULL_FRAME_TYPES = {"freeze", "black", "flash", "noise", "lines", "tear", "streak"}
 
 
 @dataclass
@@ -33,7 +33,9 @@ class RepairConfig:
     max_gap: int = 12            # longest run whose frames are replaced entirely
     max_masked_gap: int = 120    # longest run that may be repaired by masked blending only
     max_static_seconds: float = 3.0  # longer full-frame runs are interpolated if the scene is static
-    static_motion: float = 3.0   # mean |luma(a) - luma(b)| in 8-bit codes below which a scene is static
+    static_motion: float = 8.0   # mean |luma(a) - luma(b)| in 8-bit codes below which a scene is static
+    moving_fallback: bool = True  # long full-frame runs in a moving scene: interpolate anyway
+                                  # (a corrupted frame is worse than a soft interpolation)
     blend_max_area: float = 0.4  # masks larger than this replace the whole frame
     feather: float = 0.6         # mask feathering, in patches
     static_lo: float = 4.0       # |a - b| (8-bit codes, smoothed) below which a pixel counts as static
@@ -261,7 +263,9 @@ def repair(path: Path, det: Detection, output: Path, cfg: RepairConfig | None = 
                     run.append(pending.popleft())
                 if p.status == "interpolate_if_static":
                     m = repairer.motion(refs[p.a], refs[p.b])
-                    if m > cfg.static_motion:
+                    if m > cfg.static_motion and cfg.moving_fallback:
+                        log.info("run %d-%d: scene moves (%.1f codes), interpolating anyway", p.first, p.last, m)
+                    elif m > cfg.static_motion:
                         log.info("run %d-%d: scene moves (%.1f codes), left unrepaired", p.first, p.last, m)
                         for f in run:
                             status[f.index] = "unrepaired:motion"

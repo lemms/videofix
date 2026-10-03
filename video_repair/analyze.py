@@ -17,6 +17,7 @@ interrupted run resumes where it stopped.
 from __future__ import annotations
 
 import json
+import math
 import logging
 import time
 from dataclasses import asdict
@@ -31,7 +32,7 @@ from .features import Backbone
 
 log = logging.getLogger(__name__)
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 CHUNK = 1024
 LAGS = (1, 2, 3)
 BANK_FRAMES = 96
@@ -152,6 +153,9 @@ def analyze(path: str | Path, out_dir: str | Path, backbone_name: str = "auto",
     batch: list[io.Frame] = []
     t0, n_done = time.time(), 0
     thumb_hw = (grid[0] * 4, grid[1] * 4)
+    # streak cells have a fixed physical size (~112 px; 18x24 at 2.7K) so one hard
+    # vertical edge can't dominate a cell in low-resolution video
+    stripe_grid = (max(2, round(info.height / 112)), max(2, round(info.width / 112)))
     still_hw = (max(8, info.height // 4), max(8, info.width // 4))
 
     def flush_chunks(final: bool, upto: int) -> None:
@@ -177,6 +181,9 @@ def analyze(path: str | Path, out_dir: str | Path, backbone_name: str = "auto",
         expo = signals.exposure(rgb)
         lines = signals.line_scores(y)
         hf = signals.high_freq(y)
+        stripe = signals.stripes(y, stripe_grid)
+        stripe_frac = (stripe > math.log(3)).float().flatten(1).mean(1)
+        stripe_max = stripe.flatten(1).amax(1).exp()
         block = signals.blockiness(y, grid)
         novel = _novelty(patches, bank)
         code = 1023.0 if info.bit_depth > 8 else 255.0
@@ -187,6 +194,8 @@ def analyze(path: str | Path, out_dir: str | Path, backbone_name: str = "auto",
                 "key": fr.key, "pict_type": "IPB".find(fr.pict_type[:1]) if fr.pict_type else -1,
                 "corrupt": fr.corrupt, "decode_errors": fr.decode_errors, "packet_size": fr.packet_size,
                 "hf": hf[i].item(), "block_mean": block[i].mean().item(),
+                "stripe": stripe[i].half().cpu().numpy(), "stripe_frac": stripe_frac[i].item(),
+                "stripe_max": stripe_max[i].item(),
                 "block": block[i].half().cpu().numpy(), "novel": novel[i].half().cpu().numpy(),
             }
             for k, v in expo.items():

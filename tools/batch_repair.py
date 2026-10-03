@@ -81,10 +81,13 @@ class Status:
 
 
 CHILDREN: set[subprocess.Popen] = set()
+STOPPING = False
 
 
 def _stop(signum, frame):
     """On SIGTERM/SIGINT stop the running analyse/repair jobs too, then exit."""
+    global STOPPING
+    STOPPING = True                      # no new jobs may start from here on
     for c in list(CHILDREN):
         c.terminate()
     for c in list(CHILDREN):
@@ -96,6 +99,8 @@ def _stop(signum, frame):
 
 
 def run(cmd: list[str], log: Path) -> None:
+    if STOPPING:
+        raise RuntimeError("stopping")
     with open(log, "a") as fh:
         fh.write(f"\n$ {' '.join(cmd)}\n")
         fh.flush()

@@ -114,3 +114,23 @@ def test_keep_static_crossfades_and_restores_grain():
     assert abs(float(out.mean()) - 0.5) < 2e-3            # cross-fade of a and b, not the interpolator
     noise = (out[1] - 0.5).std()                          # t=0.5: grain restores ~sigma
     assert 0.007 < float(noise) < 0.013
+
+
+def test_streak_hysteresis_catches_faded_tail_but_not_single_objects():
+    from video_repair.detect import _hysteresis
+    x = np.array([0.0, 0.002, 0.3, 0.05, 0.02, 0.009, 0.005, 0.002, 0.0, 0.003, 0.012, 0.002])
+    on = _hysteresis(x, 0.02, 0.004)
+    assert on.tolist() == [False, False, True, True, True, True, True, False, False, False, False, False]
+
+
+def test_stripes_signal_flags_vertical_streaks():
+    import torch
+    from video_repair import signals
+    rng = np.random.default_rng(0)
+    img = rng.random((1, 1, 120, 160)).astype(np.float32) * 0.3 + 0.3     # textured, isotropic
+    streaked = img.copy()
+    streaked[..., 60:, :] = streaked[..., 59:60, :]                        # copy one row down
+    r_clean = signals.stripes(torch.from_numpy(img), (6, 8))
+    r_bad = signals.stripes(torch.from_numpy(streaked), (6, 8))
+    assert float(r_clean.max()) < np.log(2)
+    assert float((r_bad > np.log(3)).float().mean()) > 0.4

@@ -17,13 +17,16 @@ def make_clip(path: Path, n: int = 60, w: int = 320, h: int = 180, fps: int = 30
     s.width, s.height, s.pix_fmt = w, h, pix_fmt
     s.options = {"g": str(gop), "bf": "2", "crf": "18"} if codec == "libx264" else {}
     yy, xx = np.mgrid[0:h, 0:w]
+    noise = np.random.default_rng(1)
     for i in range(n):
         img = np.zeros((h, w, 3), np.uint8)
-        img[..., 0] = (xx + 3 * i) % 256
+        img[..., 0] = (xx + yy + 3 * i) % 256        # diagonal bands: nothing like decoder streaks
         img[..., 1] = (yy * 255 // h)
         img[..., 2] = 128
         x0 = 20 + 4 * i % (w - 60)
         img[60:100, x0:x0 + 40] = 255
+        # sensor-like noise: real footage is never perfectly flat
+        img = np.clip(img.astype(np.int16) + noise.integers(-6, 7, img.shape), 0, 255).astype(np.uint8)
         f = av.VideoFrame.from_ndarray(img, format="rgb24")
         f.pts = i
         f.time_base = Fraction(1, fps)

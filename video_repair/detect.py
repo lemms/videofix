@@ -49,6 +49,11 @@ class DetectConfig:
         "hf": (5.0, 10.0, 1.0),         # robust z of Laplacian energy
     })
     cell_on: float = 1.0              # log-ratio for a patch to join the mask
+    # vertical-streak runs (decoder concealment): start where at least `streak_strong` of the
+    # grid cells show a streak ratio > 3, continue while at least `streak_weak` do (hysteresis,
+    # so faded tails are caught but a single vertical object never starts a run)
+    streak_strong: float = 0.02
+    streak_weak: float = 0.004
     freeze_rel: float = 0.12          # still < freeze_rel * local median change
     freeze_abs: float = 1.5           # ... and below this many 10-bit codes
     max_smear: int = 120              # longest run attributed to keyframe smear
@@ -229,6 +234,8 @@ def _score_block(f: dict[str, np.ndarray], present: np.ndarray, cfg: DetectConfi
     chans["row"] = robust_z(f["row_score"], w, 0.15)
     chans["col"] = robust_z(f["col_score"], w, 0.15)
     chans["hf"] = robust_z(f["hf"], w, 1e-3)
+    chans["stripe_frac"] = np.nan_to_num(f["stripe_frac"]) if "stripe_frac" in f else np.zeros(n)
+    streak = _hysteresis(chans["stripe_frac"], cfg.streak_strong, cfg.streak_weak)
     chans["mean_y"] = robust_z(f["mean_y"], w, 0.01)
 
     # --- decoder -----------------------------------------------------------------------
@@ -247,9 +254,10 @@ def _score_block(f: dict[str, np.ndarray], present: np.ndarray, cfg: DetectConfi
     chans["still"] = still
 
     conf = 1 - keep
+    conf = np.where(streak, np.maximum(conf, 0.95), conf)
     conf = np.where(frozen, np.maximum(conf, 0.9), conf)
     conf[~present] = 0
-    defective = conf >= cfg.threshold
+    defective = (conf >= cfg.threshold) | (streak & present)
 
     # --- masks ---------------------------------------------------------------------------
     masks = np.nan_to_num(trans_map, nan=0) >= cfg.cell_on
@@ -304,7 +312,9 @@ def _score_block(f: dict[str, np.ndarray], present: np.ndarray, cfg: DetectConfi
     types[:] = ""
     z = {k: np.nan_to_num(v) for k, v in chans.items()}
     for t in np.flatnonzero(defective):
-        if frozen[t]:
+        if streak[t]:
+            types[t] = "streak"
+        elif frozen[t]:
             types[t] = "freeze"
         elif z["mean_y"][t] < -6 and f["dark_frac"][t] > 0.5:
             types[t] = "black"
@@ -322,13 +332,32 @@ def _score_block(f: dict[str, np.ndarray], present: np.ndarray, cfg: DetectConfi
             types[t] = "decode"
         else:
             types[t] = "glitch"
-        if types[t] in ("freeze", "black", "flash", "noise", "lines"):
+        if types[t] in ("freeze", "black", "flash", "noise", "lines", "streak"):
             masks[t] = True
     if cfg.dilate:
         masks = _dilate(masks, cfg.dilate)
     masks[~defective] = False
     return {"conf": conf, "defective": defective, "types": types, "masks": masks, "chans": chans}
 
+
+
+def _hysteresis(x: np.ndarray, strong: float, weak: float, back: int = 2) -> np.ndarray:
+    """True for runs that reach `strong` somewhere and stay >= `weak` around it."""
+    on = np.zeros(len(x), bool)
+    i = 0
+    while i < len(x):
+        if x[i] >= strong:
+            j = i
+            while j > 0 and x[j - 1] >= weak and i - j < back:
+                j -= 1
+            k = i
+            while k + 1 < len(x) and x[k + 1] >= weak:
+                k += 1
+            on[j:k + 1] = True
+            i = k + 1
+        else:
+            i += 1
+    return on
 
 
 def _dilate(m: np.ndarray, r: int) -> np.ndarray:

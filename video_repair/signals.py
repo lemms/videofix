@@ -68,6 +68,21 @@ def line_scores(y: torch.Tensor) -> dict[str, torch.Tensor]:
     return out
 
 
+def stripes(y: torch.Tensor, grid: tuple[int, int]) -> torch.Tensor:
+    """log(horizontal / vertical gradient energy) per cell, (B, gh, gw).
+
+    Decoder concealment of damaged H.264 slices copies pixels straight down,
+    leaving vertical colour streaks: strong left-right contrast with almost no
+    top-to-bottom change.  Natural footage stays near 0 (ratio ~1); streaks push
+    cells to ratios of 3-20.  Unlike the temporal tests this does not need clean
+    neighbours, so it also catches the middle and tail of long streak runs."""
+    eps = 0.5 / 255
+    dx = (y[..., :, 1:] - y[..., :, :-1]).abs()
+    dy = (y[..., 1:, :] - y[..., :-1, :]).abs()
+    r = (_pool(dx, grid) + eps) / (_pool(dy, grid) + eps)
+    return torch.log(r).squeeze(1)
+
+
 def high_freq(y: torch.Tensor) -> torch.Tensor:
     """Mean absolute Laplacian: rises with noise/static, falls with blur."""
     k = torch.tensor([[0, 1, 0], [1, -4, 1], [0, 1, 0]], dtype=y.dtype, device=y.device).view(1, 1, 3, 3)
