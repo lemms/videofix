@@ -134,3 +134,22 @@ def test_stripes_signal_flags_vertical_streaks():
     r_bad = signals.stripes(torch.from_numpy(streaked), (6, 8))
     assert float(r_clean.max()) < np.log(2)
     assert float((r_bad > np.log(3)).float().mean()) > 0.4
+
+
+def test_keep_runs_with_types_keeps_whole_streak_runs():
+    from video_repair.detect import Detection
+    from video_repair.pipeline import keep_runs_with_types
+    n = 12
+    types = np.array([""] * n, dtype=object)
+    types[[1, 2, 3]] = ["smear", "streak", "smear"]      # streak run with fainter edges
+    types[[7, 8]] = ["glitch", "glitch"]                  # unrelated short run
+    defective = types != ""
+    run_id = np.full(n, -1)
+    run_id[[1, 2, 3]] = 0
+    run_id[[7, 8]] = 1
+    det = Detection(np.arange(n), np.zeros(n), defective, defective.astype(float), types, run_id,
+                    np.repeat(defective[:, None, None], 2, 1).repeat(2, 2), {}, np.ones(n, bool))
+    det = keep_runs_with_types(det, {"streak"})
+    assert np.flatnonzero(det.defective).tolist() == [1, 2, 3]
+    assert det.runs() == [(0, 1, 3)]
+    assert not det.masks[7].any()

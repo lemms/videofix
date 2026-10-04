@@ -167,6 +167,7 @@ def main() -> int:
     ap.add_argument("--work", type=Path, required=True)
     ap.add_argument("--cameras", default=r"\d+", help="regex for camera folder names (default: digits)")
     ap.add_argument("--skip-name", action="append", default=[], help="file names to skip")
+    ap.add_argument("--only-types", help="pass to detect: keep only runs containing these defect types")
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--margin-gb", type=float, default=20.0, help="keep this much free on the output disk")
     a = ap.parse_args()
@@ -209,7 +210,8 @@ def main() -> int:
         try:
             status.set(key, {"state": "analysing", "started": t0})
             run([PY, "-m", "video_repair", "analyze", str(src), "--work", str(work)], log)
-            run([PY, "-m", "video_repair", "detect", str(src), "--work", str(work), "--no-review"], log)
+            run([PY, "-m", "video_repair", "detect", str(src), "--work", str(work), "--no-review"]
+                + (["--only-types", a.only_types] if a.only_types else []), log)
             summary = summarize(work / "defective_frames.csv")
             if summary["defective_frames"] == 0:
                 status.set(key, {"state": "clean", "seconds": round(time.time() - t0), **summary})

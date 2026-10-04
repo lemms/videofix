@@ -55,6 +55,8 @@ def _detect(args):
     det = detect(FeatureStore(p["features"]), cfg)
     if args.labels:
         det = _calibrate(det, args.labels, cfg)
+    if args.only_types:
+        det = keep_runs_with_types(det, set(args.only_types.split(",")))
     write_csv(det, p["csv"])
     save_masks(det, p["masks"])
     runs = det.runs()
@@ -62,6 +64,23 @@ def _detect(args):
     for t in det.defect_type[det.defective]:
         by_type[t] = by_type.get(t, 0) + 1
     log.info("detect: %d defective frames in %d runs %s -> %s", int(det.defective.sum()), len(runs), by_type, p["csv"])
+    return det
+
+
+def keep_runs_with_types(det, types: set[str]):
+    """Keep only defective runs containing at least one frame of ``types``.
+
+    Whole runs are kept (their fainter frames often get another label, e.g. a
+    streak run's onset reads as 'smear'); every other run is dropped."""
+    keep = np.zeros(len(det.defective), bool)
+    for _, first, last in det.runs():
+        if any(det.defect_type[t] in types for t in range(first, last + 1)):
+            keep[first:last + 1] = True
+    dropped = int((det.defective & ~keep).sum())
+    det.defective = det.defective & keep
+    det.masks[~det.defective] = False
+    det.run_id = np.where(det.defective, det.run_id, -1)
+    log.info("only runs with %s: dropped %d frames of other defect types", ",".join(sorted(types)), dropped)
     return det
 
 
@@ -177,6 +196,8 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("--extend-to-keyframe", action="store_true",
                         help="treat codec errors as persisting until the next keyframe (bitstream damage)")
         sp.add_argument("--no-review", action="store_true", help="skip the HTML review page")
+        sp.add_argument("--only-types", help="comma-separated defect types; keep only runs containing one "
+                                             "(e.g. 'streak' for decoder-concealment damage)")
 
     def rep_opts(sp):
         sp.add_argument("--max-gap", type=int, default=12, help="longest defective run to interpolate")
